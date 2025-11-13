@@ -21,13 +21,27 @@ for group in "${DISK_GROUPS[@]}"; do
     log "  - $group"
 done
 
+# Détermine le chemin correct du disque, by-id ou /dev/sdX
+get_disk_path() {
+    local d=$1
+    if [ -e "/dev/disk/by-id/$d" ]; then
+        echo "/dev/disk/by-id/$d"
+    elif [ -b "/dev/$d" ]; then
+        echo "/dev/$d"
+    else
+        echo ""  # disque non trouvé
+    fi
+}
+
 read_io() {
     local disk=$1
-    if [ ! -b "/dev/$disk" ]; then
-        log "WARNING: Disk /dev/$disk does not exist!"
+    local path=$(get_disk_path "$disk")
+    if [ -z "$path" ]; then
+        log "WARNING: Disk $disk does not exist!"
         return 1
     fi
-    awk '{print $1+$5}' /sys/block/${disk}/stat
+    local real_disk=$(basename $(readlink -f "$path"))
+    awk '{print $1+$5}' /sys/block/${real_disk}/stat
 }
 
 for group in "${DISK_GROUPS[@]}"; do
@@ -35,7 +49,8 @@ for group in "${DISK_GROUPS[@]}"; do
     valid_disks=()
 
     for d in "${disks[@]}"; do
-        if [ -b "/dev/$d" ]; then
+        disk_path=$(get_disk_path "$d")
+        if [ -n "$disk_path" ]; then
             valid_disks+=("$d")
         else
             log "Skipping non-existent disk: $d"
@@ -72,7 +87,8 @@ for group in "${DISK_GROUPS[@]}"; do
         log "Disk $d idle time: $idle s"
 
         if [ "$idle" -gt $THRESHOLD ]; then
-            state=$(/usr/sbin/hdparm -C /dev/$d 2>/dev/null | awk '/drive state/ {print $NF}')
+            disk_path=$(get_disk_path "$d")
+            state=$(/usr/sbin/hdparm -C "$disk_path" 2>/dev/null | awk '/drive state/ {print $NF}')
             if [ "$state" != "standby" ]; then
                 disks_idle_ok+=("$d")
             else
@@ -82,7 +98,7 @@ for group in "${DISK_GROUPS[@]}"; do
     done
 
     if [ ${#disks_idle_ok[@]} -gt 0 ]; then
-        cmd="/usr/sbin/hdparm -y $(printf '/dev/%s ' "${disks_idle_ok[@]}")"
+        cmd="/usr/sbin/hdparm -y $(printf '%s ' "$(for d in "${disks_idle_ok[@]}"; do get_disk_path "$d"; done)")"
         log "All idle disks > $THRESHOLD s. Running: $cmd"
         $cmd >>"$LOGFILE" 2>&1
         log "Spin down command sent for ${disks_idle_ok[*]}."
