@@ -65,6 +65,7 @@ for group in "${DISK_GROUPS[@]}"; do
     log "Checking group: ${valid_disks[*]}"
 
     disks_idle_ok=()
+    all_idle=true
     for d in "${valid_disks[@]}"; do
         disk_statfile="$TMPDIR/${d}_io"
 
@@ -79,7 +80,8 @@ for group in "${DISK_GROUPS[@]}"; do
         if [ "$io" -ne "$prev" ]; then
             log "Disk $d has activity. Resetting idle."
             echo "$io" > "$disk_statfile"
-            continue
+            all_idle=false
+            break
         fi
 
         ts=$(stat -c %Y "$disk_statfile" 2>/dev/null || echo 0)
@@ -94,21 +96,23 @@ for group in "${DISK_GROUPS[@]}"; do
             else
                 log "Disk $d already in STANDBY. Skipping."
             fi
+        else
+            all_idle=false
         fi
     done
 
-    if [ ${#disks_idle_ok[@]} -gt 0 ]; then
+    if [ "$all_idle" = true ] && [ ${#disks_idle_ok[@]} -gt 0 ]; then
         cmd="/usr/sbin/hdparm -y $(printf '%s ' "$(for d in "${disks_idle_ok[@]}"; do get_disk_path "$d"; done)")"
-        log "All idle disks > $THRESHOLD s. Running: $cmd"
+        log "ALL disks in group idle > $THRESHOLD s. Running: $cmd"
         $cmd >>"$LOGFILE" 2>&1
-        log "Spin down command sent for ${disks_idle_ok[*]}."
+        log "Spin down command sent for entire group: ${disks_idle_ok[*]}."
 
         for d in "${disks_idle_ok[@]}"; do
             disk_statfile="$TMPDIR/${d}_io"
             echo "$(read_io "$d")" > "$disk_statfile" 2>/dev/null
         done
     else
-        log "At least one disk is ACTIVE or already in STANDBY. No spin down."
+        log "At least one disk is ACTIVE or below threshold. No spin down for this group."
     fi
 done
 
